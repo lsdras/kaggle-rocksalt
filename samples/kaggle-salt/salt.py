@@ -84,7 +84,7 @@ class SaltConfig(Config):
     NAME = "salt"
 
     # Adjust depending on your GPU memory
-    IMAGES_PER_GPU = 2
+    IMAGES_PER_GPU = 8
 
     # Number of classes (including background)
     NUM_CLASSES = 1 + 1  # Background + salt
@@ -104,7 +104,7 @@ class SaltConfig(Config):
     # Input image resizing
     # Random crops of size 512x512
     IMAGE_RESIZE_MODE = "crop"
-    IMAGE_MIN_DIM = 128
+    IMAGE_MIN_DIM = 64
     IMAGE_MAX_DIM = 128
     IMAGE_MIN_SCALE = 2.0
 
@@ -123,12 +123,12 @@ class SaltConfig(Config):
     RPN_TRAIN_ANCHORS_PER_IMAGE = 64
 
     # Image mean (RGB)
-    MEAN_PIXEL = np.array([43.53, 39.56, 48.22])
+    MEAN_PIXEL = np.array([100, 100, 125])
 
     # If enabled, resizes instance masks to a smaller size to reduce
     # memory load. Recommended when using high-resolution images.
     USE_MINI_MASK = True
-    MINI_MASK_SHAPE = (56, 56)  # (height, width) of the mini-mask
+    MINI_MASK_SHAPE = (28, 28)  # (height, width) of the mini-mask
 
     # Number of ROIs per image to feed to classifier/mask heads
     # The Mask RCNN paper uses 512 but often the RPN doesn't generate
@@ -187,17 +187,11 @@ class SaltDataset(utils.Dataset):
             image_ids = next(os.walk(dataset_dir))[1]
             if subset == "train":
                 image_ids = list(set(image_ids) - set(VAL_IMAGE_IDS))
-        chart = open(os.path.join(depth_dir,'depths.csv'), 'r', encoding='utf-8')
-        depths = csv.reader(chart)
         # Add images
         for image_id in image_ids:
-            for depth in depths:
-                if depth[0] == image_id:
-                    self.add_image(
-                        "salt",
-                        image_id=image_id,
-                        path=os.path.join(dataset_dir, image_id, "images/{}.png".format(image_id)),
-                        depth=depth[1])
+            self.add_image("salt",
+                           image_id=image_id,
+                           path=os.path.join(dataset_dir, image_id, "images/{}.png".format(image_id)))
 
     def load_mask(self, image_id):
         """Generate instance masks for an image.
@@ -266,15 +260,15 @@ def train(model, dataset_dir, subset):
     print("Train network heads")
     model.train(dataset_train, dataset_val,
                 learning_rate=config.LEARNING_RATE,
-                epochs=10,
-                augmentation=augmentation,
+                epochs=20,
+                augmentation=None,
                 layers='heads')
 
     print("Train all layers")
     model.train(dataset_train, dataset_val,
                 learning_rate=config.LEARNING_RATE,
-                epochs=20,
-                augmentation=augmentation,
+                epochs=40,
+                augmentation=None,
                 layers='all')
 
 
@@ -328,6 +322,28 @@ def mask_to_rle(image_id, mask, scores):
     mask = np.max(mask * np.reshape(order, [1, 1, -1]), -1)
     # Loop over instance masks
     lines = []
+    lines.append("{},".format(image_id))
+    for o in order:
+        m = np.where(mask == o, 1, 0)
+        # Skip if empty
+        if m.sum() == 0.0:
+            continue
+        rle = rle_encode(m)
+        lines.append("{}".format(rle))
+        
+    try:
+        lines[1]=sort(" ".join(lines[1:]))
+        try:
+            del lines[2:]
+        except:
+            pass
+    except:
+        pass
+    
+    return "".join(lines)
+    
+    
+    '''lines = []
     for o in order:
         m = np.where(mask == o, 1, 0)
         # Skip if empty
@@ -335,9 +351,17 @@ def mask_to_rle(image_id, mask, scores):
             continue
         rle = rle_encode(m)
         lines.append("{}, {}".format(image_id, rle))
-    return "\n".join(lines)
+    return "\n".join(lines)'''
 
+def sort(rleString):
+    if rleString =='': return ''
+    rleNumbers = [int(numstring) for numstring in rleString.split(' ')]
+    rlePairs = np.array(rleNumbers).reshape(-1,2)
+    rle_array = rlePairs[rlePairs[:,0].argsort()].flatten()
+    rle = ' '.join(map(str, rle_array))
+    return rle
 
+    
 ############################################################
 #  Detection
 ############################################################
@@ -359,7 +383,10 @@ def detect(model, dataset_dir, subset):
     dataset.prepare()
     # Load over images
     submission = []
+    i=0
     for image_id in dataset.image_ids:
+        i=i+1
+        print(i)
         # Load image and run detection
         image = dataset.load_image(image_id)
         # Detect objects
@@ -367,17 +394,18 @@ def detect(model, dataset_dir, subset):
         # Encode image to RLE. Returns a string of multiple lines
         source_id = dataset.image_info[image_id]["id"]
         rle = mask_to_rle(source_id, r["masks"], r["scores"])
+        print(rle)
         submission.append(rle)
-        # Save image with masks
-        visualize.display_instances(
+        #Save image with masks
+        '''visualize.display_instances(
             image, r['rois'], r['masks'], r['class_ids'],
             dataset.class_names, r['scores'],
-            show_bbox=False, show_mask=False,
+            show_bbox=False, show_mask=True,
             title="Predictions")
         plt.savefig("{}/{}.png".format(submit_dir, dataset.image_info[image_id]["id"]))
-
+'''
     # Save to csv file
-    submission = "ImageId,EncodedPixels\n" + "\n".join(submission)
+    submission = "id,rle_mask\n" + "\n".join(submission)
     file_path = os.path.join(submit_dir, "submit.csv")
     with open(file_path, "w") as f:
         f.write(submission)
@@ -473,3 +501,13 @@ if __name__ == '__main__':
     else:
         print("'{}' is not recognized. "
               "Use 'train' or 'detect'".format(args.command))
+        
+'''
+raw
+
+2im1dep
+0.1 avg with augmet
+
+1im1dep1zeros
+0.25 avg with augment
+'''
